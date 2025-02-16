@@ -119,7 +119,6 @@ itcl::class Subgui {
 
 }
 
-
 itcl::class Relaymodel {
     inherit ClOClass NullModel
     constructor {} {
@@ -150,7 +149,6 @@ itcl::class externalClass {
         return "Test from externalClass ok"
     }
 }
-
 
 proc main {} {
     

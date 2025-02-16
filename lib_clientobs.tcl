@@ -1,4 +1,8 @@
-package provide lib_clientobs 1.11
+package provide lib_clientobs 1.12
+# 2025-01-31
+# ...so it stands to reason if people found types more productive 
+# than the wild west of sending messages and 
+# hoping someone, somewhere will receive them
 package require Itcl
 
 # logg levels
@@ -17,7 +21,7 @@ package require Itcl
 
 itcl::class CommonAppStruct {
     # this class is a super class for all classes
-    # making for an applicationwide structure of obejcts
+    # making for an applicationwide structure of objects
     # so it is possible to call a known method of a known class
     # of an unknown instance :-)
     # usefull if we have some singeltons for applicationwide use (config, diskio etc.)
@@ -62,12 +66,7 @@ itcl::class CommonAppStruct {
             puts "$cla $obs"
         }
     }
-    proc _searchMemberByClass {classname {filter *} {exact 0} {all 0}} {
-        # searches for instances of classname
-        # exact >0 returns only instances of exactly that class
-        # exact =0 also returns derived/inherited classes
-        # all>0 returns a list of all matches
-        # filter can filter on the instance name *gui* for example
+    proc _searchMemberByClass {classname {filter *} {exact 1} {multiple 0}} {
         set o -1
         if {$filter!="*"} {
             set l0 [lsearch -inline -glob -nocase -all $__members $filter]
@@ -82,8 +81,9 @@ itcl::class CommonAppStruct {
             if {$isacla} {
                 set classname2 [$o info class]
                 set classname2 [string range $classname2 2 end]
+                #puts "Checking $classname==$classname2"
                 if {($classname==$classname2)||($exact==0)} {
-                    if {$all==0} {
+                    if {$multiple==0} {
                         return $o
                     } else {
                         lappend result $o
@@ -94,12 +94,76 @@ itcl::class CommonAppStruct {
                 set o -1
             }
         }
-        if {$all>0} {
+        if {$result==""} {
+            set result -1
+        }
+        if {$multiple>0} {
+            return $result
+        }        
+        if {$exact==0} {
             return $result
         } else {
             return -1
         }
     }
+    proc _searchInstanceByClass {classname {filter *} {exact 1} {multiple 0}} {
+        # searches for generic instance, needs itcl 4.1 or higher
+        # searches for instances of classname
+        # exact >0 returns only instances of exactly that class
+        # exact =0 also returns derived/inherited classes
+        # all>0 returns a list of all matches
+        # filter can filter on the instance name *gui* for example
+        set o -1
+        set __instances ""
+        catch {set __instances [::info class instances $classname]}
+        #puts $__instances
+        # and also inherited classes
+        set subs ""
+        catch {set subs [::info class subclasses $classname]}
+        foreach sub $subs {
+            set inst [::info class instances $sub]
+            lappend __instances {*}$inst
+        }            
+        
+        if {$filter!="*"} {
+            set l0 [lsearch -inline -glob -nocase -all $__instances $filter]
+        } else {
+            set l0 $__instances
+        }
+        set result {}
+        foreach o $l0 {
+            set isacla 0
+            catch {set isacla [$o isa $classname]} e
+            
+            if {$isacla} {
+                set classname2 [$o info class]
+                set classname2 [string range $classname2 2 end]
+                #puts "Checking $classname==$classname2"
+                if {($classname==$classname2)||($exact==0)} {
+                    if {$multiple==0} {
+                        return $o
+                    } else {
+                        lappend result $o
+                    }
+                }
+                #break
+            } else {
+                set o -1
+            }
+        }
+        if {$result==""} {
+            set result -1
+        }
+        if {$multiple>0} {
+            return $result
+        }        
+        if {$exact==0} {
+            return $result
+        } else {
+            return -1
+        }
+    }
+    
     method _searchMemberByVar {varname} {
         # searches for a class-variable varname
         # and returns it's value if its a class instance
@@ -146,10 +210,127 @@ itcl::class CommonAppStruct {
         # works like a singelton pattern if needed
         set o [_searchMemberByClass $classname]
         if {$o==-1} {
+            # maybe it's not a ClOClass? Make a second, generic search
+            set o [_searchInstanceByClass $classname * 0 0]
+        }        
+        if {$o==-1} {
             return [_factory $classname]
         } else {
             return [namespace which $o]
         }
+    }
+    # code to discover bindings from constructor or an arbitrary method by analyzing the method's body
+    # can be used for static code analysis before anything gets instantiated
+    proc hasMethod {classname evMeth} {
+        #puts "Checking $classname for $evMeth"
+        set classMethods [::info class methods $classname]
+        if {[lsearch -exact $classMethods $evMeth]==-1} { 
+            #puts "not found in $classname, searching inheritance"
+            # get superclasses
+            set inheritance [::info class superclasses $classname]
+            if {[llength $inheritance]==0} {
+                set classMethods {}
+                #puts "Not found $evMeth in $classname"
+            }
+            foreach realClass $inheritance {
+                set hasMethod [hasMethod $realClass $evMeth]
+                if {$hasMethod!=""} {
+                    #puts "found in superclass $hasMethod"
+                    return $hasMethod
+                }
+            }
+        } else {
+            #puts "found in orig class $classname"
+            return $classname
+        }
+        return ""
+    }
+    proc hasBinding {classname event {initmethod constructor}} {
+        # lookup if class has event in its bindings
+        set events [getBindings $classname $initmethod]
+        foreach {ev inf} $events {
+            if {$ev==$event} {
+                return $inf
+            }
+        }
+        return ""            
+    }
+    proc getBindings {classname {initmethod constructor}} {
+        if {[hasMethod $classname $initmethod]!=$classname} {
+            return 
+        }
+        set bl [::info class definition $classname $initmethod]
+        # make a list from the code
+        set arglist [lindex $bl 0]
+        set bl [lindex $bl 1]
+        set bl [split $bl \n]
+        
+        # filter by bindEvent
+        set bev [lsearch -glob -all $bl *bindEvent*]
+        
+        # check bindEvent lines
+        set hasEvents {}
+        foreach ev $bev {
+            set ev [lindex $bl $ev]
+            set ev [string trim $ev]
+            set isBev [expr ("[lindex $ev 0]"=="bindEvent"?1:0)]
+            if {($isBev>0)&&([llength $ev]>=3)} {
+                set evName [lindex $ev 1]
+                set evMeth [lindex $ev 2]
+            } else {
+                continue
+            }
+            # check if method is local
+            set realClass [hasMethod $classname $evMeth]
+            if {$realClass!=""} {
+                set classMethods [::info class methods $realClass]
+            } else {
+                set classMethods ""
+            }
+            
+            if {[lsearch -exact $classMethods $evMeth]>-1} { 
+                set ebl [::info class definition $realClass $evMeth]
+                # make a list from the code
+                set arglist [lindex $ebl 0]
+                #puts "$evName --> $realClass :: $evMeth ($arglist)"
+                dict set hasEvents $evName [list "class" $realClass "method" $evMeth "args" $arglist]
+            }
+        }
+        # result is a dict 
+        return $hasEvents
+    }    
+    proc searchClassByMethod {method {root itcl::Root}} {
+        # returns the first classname, that implements method
+        set hasMethod [hasMethod $root $method]
+        if {$hasMethod!=""} {
+            return $hasMethod
+        }            
+        set subs [::info class subclasses $root]
+        foreach sub $subs {
+            set hasMethod [searchClassByMethod $method $sub]
+            if {$hasMethod!=""} {
+                return $hasMethod
+            }
+        }            
+        
+    }
+    proc searchClassByEvent {event {root itcl::Root} {initmethod constructor}} {
+        # experimental, search from root downward for a class binding to event 
+        # returns first class the binds the event
+        #puts "Looking up $event on $root"
+        set hasMethod [hasBinding $root $event $initmethod]
+        if {$hasMethod!=""} {
+            return $root
+        }            
+        set subs [::info class subclasses $root]
+        #puts "Looking in subs $subs"
+        foreach sub $subs {
+            set hasMethod [searchClassByEvent $event $sub $initmethod]
+            if {$hasMethod!=""} {
+                return $hasMethod
+            }
+        }            
+        
     }
     # these methods are shortcuts for $obj cget -varname
     method --> {varname args} {
@@ -359,7 +540,10 @@ itcl::class ClOClass {
         }
         return [lsort -unique $l]
     }
-    method listClients {o} {
+    method listClients {{o ""}} {
+        if {$o==""} {
+            set o $this
+        }
         set o [namespace which $o]
         if {$o==""} {
             return {}
@@ -391,7 +575,7 @@ itcl::class ClOClass {
             set _SysEvents [lsort -unique $_SysEvents]
         }
         
-        set _Methods($ev) $method
+        dict set _Methods $ev $method
     }
     method delegateEvent {ev obj {type instance} {alias ""}} {# set type to variable to resolve at runtime
         _garbagecollect_obs
@@ -417,6 +601,14 @@ itcl::class ClOClass {
                 set alias $ev
             }
             lappend _EvDelegates [list $ev $this $o $alias]
+        }
+    }
+    method delegateClassBindings {class obj  {type instance}} {
+        # delegateEvent for ALL events of a class based on getBindings
+        set binds [getBindings $class]
+        foreach binding [dict keys $binds] {
+            puts "delegating $binding to $obj $type"
+            delegateEvent $binding $obj $type
         }
     }
     proc _boundEvent {ev} {
@@ -524,26 +716,15 @@ itcl::class ClOClass {
     }
 
     method notify2 {filter args} {
-        #notifies all obeservers containing $filter in its name
-        set obs [searchObs $filter]
-        set MID [_createMID]
-        set _Caller [namespace which $this]
-        lappend _Callstack [list $_Caller $MID]
-        foreach o $list {
-            $o _notified [namespace which $this] {*}$args
+        #notifies all obeservers containing $filter
+        set obs $_Observers
+        set _Observers [searchObs $filter]
+        set r -1
+        if {[llength $_Observers]>0} {
+            catch {set r [notify {*}$args]}
         }
-        set _Caller ""
-        set _Callstack [lrange $_Callstack 0 end-1]
-        return $MID
-        #this is the old. buggy version
-        #set obs $_Observers
-        #set _Observers [searchObs $filter]
-        #set r -1
-        #if {[llength $_Observers]>0} {
-        #    catch {set r [notify {*}$args]}
-        #}
-        #set _Observers $obs
-        #return $r
+        set _Observers $obs
+        return $r
     }
     method deliver2 {list args} {
         # deliver message directly to listed objects in $list
@@ -553,26 +734,14 @@ itcl::class ClOClass {
         if {$cmd==""} {return}
         set _dspOK($cmd) 0
         
-        set MID [_createMID]
-        set _Caller [namespace which $this]
-        lappend _Callstack [list $_Caller $MID]
-        #unset -nocomplain _opResult
-        foreach o $list {
-            $o _notified [namespace which $this] {*}$args
+        set obs $_Observers
+        set _Observers $list
+        set r -1
+        if {[llength $_Observers]>0} {
+            catch {set r [notify {*}$args]}
         }
-        set _Caller ""
-        set _Callstack [lrange $_Callstack 0 end-1]
-        return $MID
-        
-        #this is the old. buggy version
-        #set obs $_Observers
-        #set _Observers $list
-        #set r -1
-        #if {[llength $_Observers]>0} {
-        #    catch {set r [notify {*}$args]}
-        #}
-        #set _Observers $obs
-        #return $r
+        set _Observers $obs
+        return $r
     }
     proc _notifytop {args} {
         # if a _Toplevel is set, notify this one
@@ -775,7 +944,7 @@ itcl::class ClOClass {
         
         set args [lrange $args 1 end]
         set method ""
-        catch {set method $_Methods($cmd0)}
+        catch {set method [dict get $_Methods $cmd0]}
         if {$method!=""} {
             set cmd $method
         } else {
@@ -834,6 +1003,7 @@ itcl::class ClOClass {
         }
     }
     method _relay {obj args} {
+        # relays a method to a native object or command
         if {[llength $args]==0} {return -1}
         
         set cmd0 [lindex $args 0]
@@ -928,6 +1098,24 @@ itcl::class ClOClass {
         }
         
     }
+    proc handle_unknown {args} {
+        set r {}
+        catch {
+            if {[::ClOClass::_boundEvent [lindex $args 0]]>0} {
+                set mid [::ClOClass::_notifytop {*}$args]
+                set r [::ClOClass::getResults $mid]
+            }
+        }
+        if {[llength $r]>0} {
+            #got handled
+            set r [lindex $r 0]
+            set l [llength $r]
+            incr l -1
+            set res [lindex $r $l]
+            return $res
+        }
+        return -code error
+    }        
     proc define_unknown {} {
         # together with bindEvent ev proc export
         # this will call the global notify chain (_notifytop) 
@@ -948,25 +1136,19 @@ itcl::class ClOClass {
         uplevel #0 {
             set fname "unknown_[clock seconds]"
             puts "Renaming unknown to $fname"
+            set ::ClOClass::unknown_original $fname
             rename unknown $fname
-            set ::ClOClass::unknown_original  $fname ;
             proc unknown  args  {
-                set r {}
-                catch {
-                    if {[::ClOClass::_boundEvent [lindex $args 0]]>0} {
-                        set mid [::ClOClass::_notifytop {*}$args]
-                        set r [::ClOClass::getResults $mid]
-                    }
+                if {[info exists ::ClOClass::unknown_original]==0} {
+                    # something went wrong here
+                    puts "Not found ::ClOClass::unknown_original"
+                    return
                 }
-                if {[llength $r]>0} {
-                    #got handled
-                    set r [lindex $r 0]
-                    set l [llength $r]
-                    incr l -1
-                    set res [lindex $r $l]
-                    return $res
+                if {[catch {set r [::ClOClass::handle_unknown {*}$args]} e]} {
+                    # ok, no eventhandler found
+                    tailcall $::ClOClass::unknown_original {*}$args
                 }
-                tailcall $::ClOClass::unknown_original {*}$args
+                return $r
             }
         }
     }
@@ -1048,4 +1230,5 @@ proc __itcl_getmem {{dump 0}} {
     if {$dump>0} {puts $rs}
     return $rs    
 }            
+
 
