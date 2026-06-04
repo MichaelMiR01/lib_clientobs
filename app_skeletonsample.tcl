@@ -79,7 +79,7 @@ itcl::class Submodel {
         bindEvent test OnTest
     }
     method OnTest {t} {
-        puts "test in submodel: $this $t"
+        puts "test in submodel: $_Caller called for test ... $this $t"
     }
     method OnBubbleTest {t} {
         puts "bubbletest: $this $t"
